@@ -1,0 +1,28 @@
+# Виртуальное окружение
+.venv/
+venv/
+env/
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+
+# Файлы с данными (создаются при работе программы)
+task_links.json
+task_data.json
+closed_in_isur.json
+
+# Файлы IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Переменные окружения (будут позже)
+.env
+
+# Логи
+*.log
