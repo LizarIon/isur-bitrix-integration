@@ -25,4 +25,4 @@ closed_in_isur.json
 env.txt
 
 # Логи
-*.log
+*.log"sync.db" 

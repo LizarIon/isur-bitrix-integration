@@ -130,12 +130,6 @@ def save_task_data(task_data):
     for isur_id, data in task_data.items():
         save_task_data(isur_id, data)
 
-# Файлы с данными больше не используются
-LINKS_FILE = None
-DATA_FILE = None
-COMPLETED_FILE = None
-CLOSED_FILE = None
-
 def save_completed_list(completed_list):
     """Сохраняет список завершённых задач в БД."""
     with get_connection() as conn:

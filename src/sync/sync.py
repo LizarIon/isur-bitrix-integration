@@ -110,7 +110,7 @@ def prepare_data():
 
 def run_pass1_creation(links, works):
     """Создаёт новые задачи в Битрикс24."""
-    print(f"\n📤 ПРОХОД 1: Создание новых задач")
+    log_info("📤 ПРОХОД 1: Создание новых задач")
     print("-" * 50)
 
     created = 0
@@ -150,7 +150,7 @@ def run_pass1_creation(links, works):
 
 def run_pass2_update(links, works):
     """Обновляет данные существующих задач."""
-    print(f"\n🔄 ПРОХОД 2: Обновление данных")
+    log_info("🔄 ПРОХОД 2: Обновление данных")
     print("-" * 50)
 
     updated = 0
@@ -188,7 +188,7 @@ def run_pass2_update(links, works):
 
 def sync_participants(links, token):
     """Добавляет исполнителей (участников) в задачи ИСУР."""
-    print(f"\n👥 Синхронизация участников (исполнителей)")
+    log_info("👥 Синхронизация участников (исполнителей)")
     print("-" * 50)
 
     isur_headers = {"Authorization": f"Bearer {token}", "Accept": "application/json"}
@@ -278,7 +278,7 @@ def sync_participants(links, token):
 
 def run_pass3_parents(links, works):
     """Устанавливает родительские связи."""
-    print(f"\n👪 ПРОХОД 3: Установка родительских связей")
+    log_info("👪 ПРОХОД 3: Установка родительских связей")
     print("-" * 50)
 
     parents_set = 0
@@ -333,7 +333,7 @@ def run_pass3_parents(links, works):
 
 def run_pass4_completed(links):
     """Находит завершённые задачи в Битрикс24 и сохраняет в БД."""
-    print(f"\n📥 ПРОХОД 4: Поиск завершённых задач в Битрикс24")
+    log_info("📥 ПРОХОД 4: Поиск завершённых задач в Битрикс24")
     print("-" * 50)
 
     completed_list = []
@@ -372,7 +372,7 @@ def run_pass4_completed(links):
 
 def run_pass5_close(links):
     """Закрывает завершённые задачи в ИСУР."""
-    print(f"\n📥 ПРОХОД 5: Закрытие завершённых задач в ИСУР")
+    log_info("📥 ПРОХОД 5: Закрытие завершённых задач в ИСУР")
     print("-" * 50)
 
     closed_in_isur = load_closed_tasks()

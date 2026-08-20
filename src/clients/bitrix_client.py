@@ -1,10 +1,8 @@
 import requests
 from src.config import BITRIX_WEBHOOK, GROUP_ID, RESPONSIBLE_ID
-from src.logger import log_info, log_error
+from src.logger import log_info, log_error, log_debug
 import time
-import requests
 from collections import deque
-from src.logger import log_debug
 
 # ============================================================
 # КОНТРОЛЬ ЧАСТОТЫ ЗАПРОСОВ К БИТРИКС24
@@ -95,8 +93,8 @@ def create_bitrix_task(work, links):
         task_data["fields"]["END_DATE_PLAN"] = finish.split("T")[0]
         task_data["fields"]["DEADLINE"] = finish
     
-    print(f"   📤 Отправляем задачу: {task_name[:40]}")
-    print(f"      UF_ISUR_TASK_ID: {isur_id}")
+    log_info(f"Отправляем задачу: {task_name[:40]}")
+    log_info(f"UF_ISUR_TASK_ID: {isur_id}")
     
     response = requests.post(
         f"{BITRIX_WEBHOOK}tasks.task.add",
@@ -108,10 +106,10 @@ def create_bitrix_task(work, links):
         result = response.json()
         if "result" in result:
             task_id = result["result"]
-            print(f"      ✅ Статус: 200, ID: {task_id}")
+            log_info(f"Задача создана, ID: {task_id}")
             return task_id
     
-    print(f"      ❌ Ошибка: {response.status_code} - {response.text[:200]}")
+    log_error(f"Ошибка создания задачи: {response.status_code} - {response.text[:200]}")
     raise Exception(f"Ошибка создания задачи: {response.text}")
 
 def update_bitrix_task(bitrix_id, work, links):
@@ -155,10 +153,10 @@ def update_bitrix_task(bitrix_id, work, links):
     )
     
     if response.status_code == 200:
-        print(f"      ✅ Обновлено: {task_name[:40]}")
+        log_info(f"Обновлено: {task_name[:40]}")
         return True
     else:
-        print(f"      ❌ Ошибка обновления: {response.status_code} - {response.text[:100]}")
+        log_error(f"Ошибка обновления задачи: {response.status_code} - {response.text[:100]}")
         return False
 
 def get_task_info(bitrix_id):
@@ -180,5 +178,5 @@ def get_task_info(bitrix_id):
                 "bitrix_id": bitrix_id
             }
     except Exception as e:
-        print(f"   ⚠️ Ошибка получения задачи {bitrix_id}: {e}")
+        log_error(f"Ошибка получения задачи {bitrix_id}: {e}")
     return None
