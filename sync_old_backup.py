@@ -19,7 +19,7 @@ ISUR_API_URL = ""
 ISUR_WORK_PARTICIPANTS_URL = ""
 
 BITRIX_WEBHOOK = ""
-GROUP_ID = 0
+GROUP_ID = 0    
 RESPONSIBLE_ID = 1
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))

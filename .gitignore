@@ -22,7 +22,7 @@ closed_in_isur.json
 *.swo
 
 # Переменные окружения (будут позже)
-.env
+env.txt
 
 # Логи
 *.log
