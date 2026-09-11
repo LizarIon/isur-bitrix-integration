@@ -1,5 +1,6 @@
 import logging
 import os
+from logging.handlers import RotatingFileHandler
 from datetime import datetime
 
 # Папка для логов
@@ -15,8 +16,13 @@ logger.setLevel(logging.DEBUG)
 # Формат сообщений
 formatter = logging.Formatter("%(asctime)s - %(levelname)s - %(message)s")
 
-# Обработчик для файла (все уровни)
-file_handler = logging.FileHandler(LOG_FILE, encoding="utf-8")
+# Обработчик для файла с ротацией (10 МБ, 5 бэкапов)
+file_handler = RotatingFileHandler(
+    LOG_FILE,
+    maxBytes=10 * 1024 * 1024,   # 10 МБ
+    backupCount=5,
+    encoding="utf-8"
+)
 file_handler.setLevel(logging.DEBUG)
 file_handler.setFormatter(formatter)
 

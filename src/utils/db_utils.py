@@ -1,5 +1,6 @@
 import sqlite3
 import json
+from contextlib import closing
 from datetime import datetime
 from src.logger import log_info
 
@@ -13,7 +14,7 @@ def get_connection():
 
 def init_db():
     """Создаёт таблицы, если их нет."""
-    with get_connection() as conn:
+    with closing(get_connection()) as conn:
         cursor = conn.cursor()
 
         # Таблица связей (task_links)
@@ -21,7 +22,8 @@ def init_db():
             CREATE TABLE IF NOT EXISTS task_links (
                 isur_id TEXT NOT NULL,
                 bitrix_id TEXT NOT NULL,
-                PRIMARY KEY (isur_id, bitrix_id)
+                PRIMARY KEY (isur_id, bitrix_id),
+                UNIQUE (bitrix_id)
             )
         """)
 
@@ -77,7 +79,7 @@ def init_db():
 
 def save_link(isur_id, bitrix_id):
     """Сохраняет или обновляет связь."""
-    with get_connection() as conn:
+    with closing(get_connection()) as conn:
         cursor = conn.cursor()
         cursor.execute(
             "INSERT OR REPLACE INTO task_links (isur_id, bitrix_id) VALUES (?, ?)",
@@ -87,14 +89,14 @@ def save_link(isur_id, bitrix_id):
 
 def load_links():
     """Загружает все связи."""
-    with get_connection() as conn:
+    with closing(get_connection()) as conn:
         cursor = conn.cursor()
         cursor.execute("SELECT isur_id, bitrix_id FROM task_links")
         return {row[0]: row[1] for row in cursor.fetchall()}
 
 def remove_link(isur_id):
     """Удаляет связку по isur_id."""
-    with get_connection() as conn:
+    with closing(get_connection()) as conn:
         cursor = conn.cursor()
         cursor.execute("DELETE FROM task_links WHERE isur_id = ?", (isur_id,))
         conn.commit()
@@ -105,7 +107,7 @@ def remove_link(isur_id):
 
 def save_task_data(isur_id, data):
     """Сохраняет полные данные задачи."""
-    with get_connection() as conn:
+    with closing(get_connection()) as conn:
         cursor = conn.cursor()
         cursor.execute(
             "INSERT OR REPLACE INTO task_data (isur_id, data) VALUES (?, ?)",
@@ -115,7 +117,7 @@ def save_task_data(isur_id, data):
 
 def load_task_data():
     """Загружает все данные задач."""
-    with get_connection() as conn:
+    with closing(get_connection()) as conn:
         cursor = conn.cursor()
         cursor.execute("SELECT isur_id, data FROM task_data")
         return {row[0]: json.loads(row[1]) for row in cursor.fetchall()}
@@ -126,7 +128,7 @@ def load_task_data():
 
 def save_closed_task(isur_id, closed_at, title):
     """Сохраняет закрытую задачу."""
-    with get_connection() as conn:
+    with closing(get_connection()) as conn:
         cursor = conn.cursor()
         cursor.execute(
             "INSERT OR REPLACE INTO closed_tasks (isur_id, closed_at, title) VALUES (?, ?, ?)",
@@ -136,7 +138,7 @@ def save_closed_task(isur_id, closed_at, title):
 
 def load_closed_tasks():
     """Загружает все закрытые задачи."""
-    with get_connection() as conn:
+    with closing(get_connection()) as conn:
         cursor = conn.cursor()
         cursor.execute("SELECT isur_id, closed_at, title FROM closed_tasks")
         return {row[0]: {"closed_at": row[1], "title": row[2]} for row in cursor.fetchall()}
@@ -147,7 +149,7 @@ def load_closed_tasks():
 
 def save_completed_list(completed_list):
     """Сохраняет список завершённых задач в БД."""
-    with get_connection() as conn:
+    with closing(get_connection()) as conn:
         cursor = conn.cursor()
         cursor.execute("DELETE FROM completed_tasks")
         for task in completed_list:
@@ -166,7 +168,7 @@ def save_completed_list(completed_list):
 
 def log_missed_webhook(isur_id, bitrix_id, field, bitrix_value, isur_value, action):
     """Записывает расхождение вебхука в БД."""
-    with get_connection() as conn:
+    with closing(get_connection()) as conn:
         cursor = conn.cursor()
         cursor.execute("""
             INSERT INTO missed_webhooks (timestamp, isur_id, bitrix_id, field, bitrix_value, isur_value, action)
@@ -184,7 +186,7 @@ def log_missed_webhook(isur_id, bitrix_id, field, bitrix_value, isur_value, acti
 
 def get_missed_webhooks(limit=20):
     """Возвращает последние записи о потерянных вебхуках."""
-    with get_connection() as conn:
+    with closing(get_connection()) as conn:
         cursor = conn.cursor()
         cursor.execute(
             "SELECT * FROM missed_webhooks ORDER BY timestamp DESC LIMIT ?",

@@ -1,8 +1,41 @@
+import time
+from datetime import datetime
 from flask import Flask, request
 from src.webhook.handler import handle_event
 from src.logger import log_info, log_error
+from src.utils.db_utils import load_links, get_missed_webhooks
 
 app = Flask(__name__)
+
+# Состояние сервиса
+_service_start_time = time.time()
+
+@app.route('/health', methods=['GET'])
+def health():
+    """Healthcheck — сервис жив?"""
+    return {"status": "ok", "service": "isur-bitrix-integration"}, 200
+
+@app.route('/status', methods=['GET'])
+def status():
+    """Возвращает статус сервиса."""
+    from src.state import get_last_sync, get_uptime
+    
+    try:
+        links_count = len(load_links())
+        missed_count = len(get_missed_webhooks(limit=1000))
+    except Exception as e:
+        links_count = -1
+        missed_count = -1
+        log_error(f"Ошибка получения статуса: {e}")
+    
+    return {
+        "status": "ok",
+        "service": "isur-bitrix-integration",
+        "uptime_seconds": get_uptime(),
+        "last_sync": get_last_sync(),
+        "links_count": links_count,
+        "missed_webhooks_count": missed_count
+    }, 200
 
 @app.route('/webhook', methods=['POST'])
 def webhook():
@@ -23,5 +56,7 @@ def webhook():
         return {"error": str(e)}, 500
 
 def start_webhook_server():
-    """Запускает Flask-сервер для приёма вебхуков."""
-    app.run(host="0.0.0.0", port=5000)
+    """Запускает production WSGI-сервер (waitress) для приёма вебхуков."""
+    from waitress import serve
+    log_info("🌐 Запуск webhook-сервера на 0.0.0.0:5000 (waitress)")
+    serve(app, host="0.0.0.0", port=5000, threads=4)

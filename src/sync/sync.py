@@ -4,13 +4,14 @@ import requests
 from datetime import datetime
 
 from src.config import BITRIX_WEBHOOK, GROUP_ID, ISUR_WORK_PARTICIPANTS_URL
+from src.state import set_last_sync
 from src.logger import log_info, log_warning, log_error
 from src.utils.db_utils import (
     load_links, save_link, load_task_data, save_task_data,
     load_closed_tasks, save_closed_task, remove_link, init_db,
     save_completed_list
 )
-from src.clients.isur_client import get_isur_token, get_isur_works, close_isur_task
+from src.clients.isur_client import get_isur_token, get_isur_works, close_isur_task, get_isur_employees
 from src.clients.bitrix_client import (
     check_bitrix_task_exists, create_bitrix_task, update_bitrix_task, get_task_info,
     bitrix_request_with_limiter
@@ -18,12 +19,16 @@ from src.clients.bitrix_client import (
 from src.exceptions import (
     ISURAuthError, ISURAPIError, BitrixAPIError, TaskCreationError
 )
+
 # ============================================================
 # ВСПОМОГАТЕЛЬНАЯ ФУНКЦИЯ ДЛЯ ПОВТОРНЫХ ПОПЫТОК
 # ============================================================
 
 def request_with_retry(url, method="get", json_data=None, params=None, retries=3, delay=2):
-    """Выполняет запрос с повторными попытками при ошибках сети или 500."""
+    """Выполняет запрос с повторными попытками при ошибках сети или 500.
+    
+    Использует exponential backoff: задержка между попытками растёт (delay * 2^attempt).
+    """
     for attempt in range(retries):
         try:
             if method == "get":
@@ -36,26 +41,33 @@ def request_with_retry(url, method="get", json_data=None, params=None, retries=3
             if response.status_code == 500:
                 log_warning(f"Ошибка 500, попытка {attempt+1} из {retries} для {url}")
                 if attempt < retries - 1:
-                    time.sleep(delay)
+                    wait = delay * (2 ** attempt)
+                    log_warning(f"Ожидание {wait}с перед следующей попыткой")
+                    time.sleep(wait)
                     continue
                 else:
                     raise BitrixAPIError(f"Ошибка 500 при запросе к {url}: {response.text}")
             return response
+
         except requests.exceptions.Timeout:
             log_warning(f"Таймаут, попытка {attempt+1} из {retries} для {url}")
             if attempt < retries - 1:
-                time.sleep(delay)
+                wait = delay * (2 ** attempt)
+                log_warning(f"Ожидание {wait}с перед следующей попыткой")
+                time.sleep(wait)
             else:
                 raise BitrixAPIError(f"Таймаут при запросе к {url}")
+
         except requests.exceptions.ConnectionError as e:
             log_warning(f"Ошибка соединения, попытка {attempt+1} из {retries} для {url}")
             if attempt < retries - 1:
-                time.sleep(delay)
+                wait = delay * (2 ** attempt)
+                log_warning(f"Ожидание {wait}с перед следующей попыткой")
+                time.sleep(wait)
             else:
                 raise BitrixAPIError(f"Ошибка соединения: {e}")
-
 # ============================================================
-# ПОДГОТОВКА ДАННЫХ (уже есть)
+# ПОДГОТОВКА ДАННЫХ
 # ============================================================
 
 def prepare_data():
@@ -65,15 +77,21 @@ def prepare_data():
 
     try:
         token = get_isur_token()
-    except Exception as e:
+    except ISURAuthError as e:
         log_error(f"Ошибка авторизации в ИСУР: {e}")
+        return None, None, None
+    except Exception as e:
+        log_error(f"Неожиданная ошибка при получении токена ИСУР: {e}")
         return None, None, None
 
     try:
         works = get_isur_works(token)
         log_info(f"Получено работ из ИСУР: {len(works)}")
-    except Exception as e:
+    except ISURAPIError as e:
         log_error(f"Ошибка получения задач из ИСУР: {e}")
+        return None, None, None
+    except Exception as e:
+        log_error(f"Неожиданная ошибка при получении задач ИСУР: {e}")
         return None, None, None
 
     # Сохраняем полные данные (для информации)
@@ -171,19 +189,33 @@ def sync_participants(links, token):
     log_info("👥 Синхронизация участников (исполнителей)")
     print("-" * 50)
 
-    isur_headers = {"Authorization": f"Bearer {token}", "Accept": "application/json"}
-
     try:
-        emp_resp = request_with_retry(
-            "https://studldn7.api.isur.tech/api/Employees",
+        employees = get_isur_employees(token)
+        email_to_isur_id = {emp.get("Email"): emp.get("Id") for emp in employees if emp.get("Email")}
+    except ISURAPIError as e:
+        log_error(f"Ошибка получения сотрудников ИСУР: {e}")
+        return
+    except Exception as e:
+        log_error(f"Неожиданная ошибка при получении сотрудников ИСУР: {e}")
+        return
+
+    # Получаем ВСЕХ участников ОДИН РАЗ до цикла
+    try:
+        part_resp = request_with_retry(
+            ISUR_WORK_PARTICIPANTS_URL,
             method="get",
             retries=2
         )
-        employees = emp_resp.json().get("Items", [])
-        email_to_isur_id = {emp.get("Email"): emp.get("Id") for emp in employees if emp.get("Email")}
+        all_participants = part_resp.json().get("Items", [])
     except Exception as e:
-        log_error(f"Ошибка получения сотрудников ИСУР: {e}")
-        return
+        log_error(f"Ошибка получения участников ИСУР: {e}")
+        all_participants = []
+
+    # Индекс: (work_id, employee_id) → exists
+    existing_participants = {
+        (p.get("Work_Id"), p.get("Employee_Id"))
+        for p in all_participants
+    }
 
     for isur_id, bitrix_id in links.items():
         try:
@@ -216,15 +248,8 @@ def sync_participants(links, token):
                 log_warning(f"Сотрудник с email {user_email} не найден в ИСУР")
                 continue
 
-            part_resp = request_with_retry(
-                ISUR_WORK_PARTICIPANTS_URL,
-                method="get",
-                retries=2
-            )
-            participants = part_resp.json().get("Items", [])
-            already_exists = any(p.get("Work_Id") == isur_id and p.get("Employee_Id") == isur_emp_id for p in participants)
-
-            if already_exists:
+            # Проверяем по локальному индексу — БЕЗ запроса к API
+            if (isur_id, isur_emp_id) in existing_participants:
                 log_info(f"Участник уже добавлен для задачи {isur_id[:8]}...")
                 continue
 
@@ -242,6 +267,8 @@ def sync_participants(links, token):
                 )
                 if part_post_resp.status_code in [200, 201]:
                     log_info(f"Добавлен участник {user_email} для задачи {isur_id[:8]}...")
+                    # Обновляем локальный индекс
+                    existing_participants.add((isur_id, isur_emp_id))
             except Exception as e:
                 log_error(f"Ошибка добавления участника: {e}")
                 continue
@@ -321,6 +348,7 @@ def sync_bidirectional():
     result = prepare_data()
     if result[0] is None:
         log_error("Ошибка подготовки данных, синхронизация прервана")
+        set_last_sync("error", "Ошибка подготовки данных")
         return
     links, works, token = result
 
@@ -338,4 +366,5 @@ def sync_bidirectional():
 
     print(f"\n{'='*70}")
     log_info("✅ ПРЯМАЯ СИНХРОНИЗАЦИЯ ЗАВЕРШЕНА")
+    set_last_sync("success", "Прямая синхронизация завершена")
     print(f"{'='*70}")

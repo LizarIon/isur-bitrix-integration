@@ -9,6 +9,10 @@ from src.config import (
 )
 from src.logger import log_info, log_error, log_debug, log_warning
 from src.exceptions import ISURAuthError, ISURAPIError
+from src.config import (
+    ISUR_LOGIN, ISUR_PASSWORD, ISUR_AUTH_URL,
+    ISUR_API_URL, ISUR_WORK_PARTICIPANTS_URL, ISUR_EMPLOYEES_URL
+)
 
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
@@ -114,3 +118,25 @@ def update_isur_task(isur_id, task_info):
     except Exception as e:
         log_error(f"Ошибка обновления задачи в ИСУР: {e}")
         return False
+
+def get_isur_employees(token):
+    """Получает список сотрудников из ИСУР."""
+    headers = {"Authorization": f"Bearer {token}", "Accept": "application/json"}
+    response = isur_request_with_limiter(
+        "GET",
+        ISUR_EMPLOYEES_URL,
+        headers=headers,
+        verify=False
+    )
+    
+    if response.status_code != 200:
+        raise ISURAPIError(f"Ошибка получения сотрудников: {response.status_code} - {response.text[:200]}")
+    
+    data = response.json()
+    
+    if isinstance(data, dict) and "Items" in data:
+        return data["Items"]
+    elif isinstance(data, list):
+        return data
+    else:
+        raise ISURAPIError(f"Неожиданный формат ответа сотрудников: {data}")
