@@ -26,37 +26,28 @@
 
 ## Настройка
 
-### 1. Получить вебхук Битрикс24
+1. **Вебхук Битрикс24**: Приложения → Входящие вебхуки → Создать.  
+   Права: `task`, `sonet_group`, `user`, `tasks_extended`.
 
-В Битрикс24 → **Приложения** → **Входящие вебхуки** → **Создать**.
+2. **`.env`**: скопируйте `.env.example` в `.env` и заполните переменные.
 
-Права: `task`, `sonet_group`, `user`, `tasks_extended`.
+3. **Зависимости**: `pip install -r requirements.txt`
 
-### 2. Создать `.env`
+4. **Запуск**: `python -m src.main`
 
-```bash
-cp .env.example .env
-```
-
-Заполнить своими данными
-
-### 3. Установить зависимости
-
-```bash
-pip install -r requirements.txt
-```
-
-### 4. Запустить
-
-```bash
-python -m src.main
-```
+Остановка — `Ctrl + C`.
 
 ---
 
-## Остановка
+## HTTP-эндпоинты
 
-Нажмите `Ctrl + C` в терминале.
+Веб-сервер работает на порту **5000**.
+
+| Метод | Путь | Назначение |
+|---|---|---|
+| `GET` | `/health` | Healthcheck — сервис жив |
+| `GET` | `/status` | Статус: последняя синхронизация, число связок, расхождений |
+| `POST` | `/webhook` | Приём исходящих вебхуков от Битрикс24 |
 
 ---
 
@@ -66,11 +57,12 @@ python -m src.main
 src/
 ├── clients/          # API-клиенты (ИСУР, Битрикс24)
 ├── sync/             # Логика синхронизации
-├── webhook/          # Обработка исходящих вебхуков
-├── utils/            # БД, логирование, настройки
+├── webhook/          # HTTP-сервер и обработка вебхуков
+├── utils/            # Работа с БД
 ├── config.py         # Загрузка .env
 ├── exceptions.py     # Кастомные ошибки
-├── logger.py         # Настройка логирования
+├── logger.py         # Логирование с ротацией
+├── state.py          # Состояние сервиса
 └── main.py           # Точка входа
 ```
 
@@ -97,7 +89,13 @@ src/
 
 ## База данных
 
-Таблицы: `task_links`, `task_data`, `closed_tasks`, `completed_tasks`, `missed_webhooks`.
+SQLite (`sync.db`). Таблицы: `task_links`, `task_data`, `closed_tasks`, `completed_tasks`, `missed_webhooks`.
+
+---
+
+## Логи
+
+`logs/sync.log` с ротацией (10 МБ × 5 файлов).
 
 ---
 
