@@ -2,12 +2,15 @@ import requests
 import time
 from collections import deque
 from datetime import datetime
+import urllib3
 from src.config import (
     ISUR_LOGIN, ISUR_PASSWORD, ISUR_AUTH_URL,
     ISUR_API_URL, ISUR_WORK_PARTICIPANTS_URL
 )
 from src.logger import log_info, log_error, log_debug, log_warning
 from src.exceptions import ISURAuthError, ISURAPIError
+
+urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 # ============================================================
 # КОНТРОЛЬ ЧАСТОТЫ ЗАПРОСОВ К ИСУР

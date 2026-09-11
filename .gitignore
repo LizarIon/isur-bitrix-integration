@@ -12,6 +12,7 @@ __pycache__/
 
 # Логи и базы данных
 logs/
+!logs/README.md
 *.log
 *.db
 sync.db
@@ -19,7 +20,8 @@ sync.db
 # Секретные файлы
 .env
 .env.local
-env.txt
+*.env
+!.env.example
 
 # IDE
 .vscode/
@@ -30,3 +32,7 @@ env.txt
 # Временные файлы
 *.tmp
 *.bak
+
+# Временные скрипты анализа
+check_script_dir.py
+import os.py

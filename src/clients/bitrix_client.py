@@ -180,3 +180,42 @@ def get_task_info(bitrix_id):
     except Exception as e:
         log_error(f"Ошибка получения задачи {bitrix_id}: {e}")
     return None
+
+def get_bitrix_tasks():
+    """Получает все задачи из Битрикс24 (для резервной сверки)."""
+    all_tasks = []
+    start = 0
+
+    while True:
+        response = bitrix_request_with_limiter(
+            "POST",
+            f"{BITRIX_WEBHOOK}tasks.task.list",
+            json={
+                "filter": {"GROUP_ID": GROUP_ID} if GROUP_ID else {},
+                "select": [
+                    "ID", "TITLE", "STATUS", "REAL_STATUS", "CLOSED_DATE",
+                    "START_DATE_PLAN", "END_DATE_PLAN", "RESPONSIBLE_ID"
+                ],
+                "start": start
+            },
+            timeout=30
+        )
+
+        if response.status_code != 200:
+            log_error(f"Ошибка получения задач из Битрикс24: {response.status_code} - {response.text[:200]}")
+            break
+
+        result = response.json()
+        tasks = result.get("result", {}).get("tasks", [])
+
+        # Приводим ключи к нижнему регистру, как ожидает sync_full.py
+        for task in tasks:
+            all_tasks.append({k.lower(): v for k, v in task.items()})
+
+        next_start = result.get("next")
+        if next_start is None:
+            break
+        start = next_start
+
+    log_info(f"Получено задач из Битрикс24: {len(all_tasks)}")
+    return all_tasks

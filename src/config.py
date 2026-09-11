@@ -1,9 +1,13 @@
 import os
-from dotenv import load_dotenv
 from pathlib import Path
+from dotenv import load_dotenv
 
-# Загружаем .env из корня проекта
-load_dotenv()
+# === ПУТИ К ФАЙЛАМ ===
+BASE_DIR = Path(__file__).resolve().parent.parent
+
+# Загружаем .env из корня проекта (явный путь)
+ENV_PATH = BASE_DIR / ".env"
+load_dotenv(dotenv_path=ENV_PATH)
 
 # === НАСТРОЙКИ ИСУР-Проекты ===
 ISUR_LOGIN = os.getenv("ISUR_LOGIN", "Admin")
@@ -19,7 +23,3 @@ RESPONSIBLE_ID = int(os.getenv("RESPONSIBLE_ID", 1) or 1)
 
 # === ВРЕМЯ РЕЗЕРВНОЙ СВЕРКИ ===
 RESERVE_SYNC_TIME = os.getenv("RESERVE_SYNC_TIME", "03:00")
-
-# === ПУТИ К ФАЙЛАМ ===
-BASE_DIR = Path(__file__).parent.parent
-SCRIPT_DIR = str(BASE_DIR)

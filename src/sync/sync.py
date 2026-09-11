@@ -27,9 +27,9 @@ def request_with_retry(url, method="get", json_data=None, params=None, retries=3
     for attempt in range(retries):
         try:
             if method == "get":
-                response = requests.get(url, params=params, timeout=30)
+                response = requests.get(url, params=params, timeout=30, verify=False)
             elif method == "post":
-                response = requests.post(url, json=json_data, timeout=30)
+                response = requests.post(url, json=json_data, timeout=30, verify=False)
             else:
                 raise ValueError(f"Неподдерживаемый метод: {method}")
 
@@ -77,47 +77,12 @@ def prepare_data():
         return None, None, None
 
     # Сохраняем полные данные (для информации)
-    task_data = {}
     for work in works:
         work_id = work.get("Id") or work.get("id")
         if work_id:
-            task_data[work_id] = work
-    save_task_data(task_data)
+            save_task_data(work_id, work)
 
     return links, works, token
-
-# ============================================================
-# ОРКЕСТРАТОР (новая версия)
-# ============================================================
-
-def sync_bidirectional():
-    """Запускает прямую синхронизацию (ИСУР → Битрикс)."""
-    print(f"\n{'='*70}")
-    log_info(f"🔄 СИНХРОНИЗАЦИЯ (ИСУР → Битрикс): {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
-    print(f"{'='*70}")
-
-    # 1. Подготовка данных
-    result = prepare_data()
-    if result[0] is None:
-        log_error("Ошибка подготовки данных, синхронизация прервана")
-        return
-    links, works, token = result
-
-    # 2. Проход 1: создание задач
-    run_pass1_creation(links, works)
-
-    # 3. Проход 2: обновление данных
-    run_pass2_update(links, works)
-
-    # 4. Синхронизация участников
-    sync_participants(links, token)
-
-    # 5. Проход 3: родители
-    run_pass3_parents(links, works)
-
-    print(f"\n{'='*70}")
-    log_info("✅ ПРЯМАЯ СИНХРОНИЗАЦИЯ ЗАВЕРШЕНА")
-    print(f"{'='*70}")
 
 # ============================================================
 # ПРОХОД 1: СОЗДАНИЕ НОВЫХ ЗАДАЧ
@@ -349,12 +314,13 @@ def run_pass3_parents(links, works):
 def sync_bidirectional():
     """Запускает все проходы синхронизации в правильном порядке."""
     print(f"\n{'='*70}")
-    log_info(f"🔄 СИНХРОНИЗАЦИЯ: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+    log_info(f"🔄 СИНХРОНИЗАЦИЯ (ИСУР → Битрикс): {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
     print(f"{'='*70}")
 
     # 1. Подготовка данных
     result = prepare_data()
     if result[0] is None:
+        log_error("Ошибка подготовки данных, синхронизация прервана")
         return
     links, works, token = result
 
@@ -371,5 +337,5 @@ def sync_bidirectional():
     run_pass3_parents(links, works)
 
     print(f"\n{'='*70}")
-    log_info("✅ СИНХРОНИЗАЦИЯ ЗАВЕРШЕНА")
+    log_info("✅ ПРЯМАЯ СИНХРОНИЗАЦИЯ ЗАВЕРШЕНА")
     print(f"{'='*70}")
