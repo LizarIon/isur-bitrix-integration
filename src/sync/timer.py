@@ -8,7 +8,7 @@ from src.logger import log_info
 def start_timer():
     """Запускает таймеры для синхронизации."""
     # Прямая синхронизация (каждые 30 минут)
-    schedule.every(30).minutes.do(sync_bidirectional)
+    schedule.every(5).minutes.do(sync_bidirectional)
     log_info("⏰ Таймер прямой синхронизации запущен (каждые 30 минут)")
     
     # Резервная сверка (раз в сутки, время из .env)

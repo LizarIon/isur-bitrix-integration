@@ -24,3 +24,7 @@ RESPONSIBLE_ID = int(os.getenv("RESPONSIBLE_ID", 1) or 1)
 
 # === ВРЕМЯ РЕЗЕРВНОЙ СВЕРКИ ===
 RESERVE_SYNC_TIME = os.getenv("RESERVE_SYNC_TIME", "03:00")
+
+# === БЕЗОПАСНОСТЬ ВЕБХУКА ===
+BITRIX_PORTAL_DOMAIN = os.getenv("BITRIX_PORTAL_DOMAIN", "")
+BITRIX_APPLICATION_TOKEN = os.getenv("BITRIX_APPLICATION_TOKEN", "")

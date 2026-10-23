@@ -3,18 +3,18 @@ import time
 import requests
 from datetime import datetime
 
-from src.config import BITRIX_WEBHOOK, GROUP_ID, ISUR_WORK_PARTICIPANTS_URL
+from src.config import BITRIX_WEBHOOK, GROUP_ID, ISUR_WORK_PARTICIPANTS_URL, ISUR_API_URL
 from src.state import set_last_sync
 from src.logger import log_info, log_warning, log_error
 from src.utils.db_utils import (
     load_links, save_link, load_task_data, save_task_data,
     load_closed_tasks, save_closed_task, remove_link, init_db,
-    save_completed_list
+    save_completed_list, load_project_links, save_project_link
 )
-from src.clients.isur_client import get_isur_token, get_isur_works, close_isur_task, get_isur_employees
+from src.clients.isur_client import get_isur_token, get_isur_works, close_isur_task, get_isur_employees, isur_request_with_limiter
 from src.clients.bitrix_client import (
     check_bitrix_task_exists, create_bitrix_task, update_bitrix_task, get_task_info,
-    bitrix_request_with_limiter
+    bitrix_request_with_limiter, create_bitrix_group
 )
 from src.exceptions import (
     ISURAuthError, ISURAPIError, BitrixAPIError, TaskCreationError
@@ -24,7 +24,7 @@ from src.exceptions import (
 # ВСПОМОГАТЕЛЬНАЯ ФУНКЦИЯ ДЛЯ ПОВТОРНЫХ ПОПЫТОК
 # ============================================================
 
-def request_with_retry(url, method="get", json_data=None, params=None, retries=3, delay=2):
+def request_with_retry(url, method="get", json_data=None, params=None, headers=None, retries=3, delay=2):
     """Выполняет запрос с повторными попытками при ошибках сети или 500.
     
     Использует exponential backoff: задержка между попытками растёт (delay * 2^attempt).
@@ -32,9 +32,11 @@ def request_with_retry(url, method="get", json_data=None, params=None, retries=3
     for attempt in range(retries):
         try:
             if method == "get":
-                response = requests.get(url, params=params, timeout=30, verify=False)
+                response = requests.get(url, params=params, headers=headers, timeout=30, verify=False)
             elif method == "post":
-                response = requests.post(url, json=json_data, timeout=30, verify=False)
+                response = requests.post(url, json=json_data, headers=headers, timeout=30, verify=False)
+            elif method == "put":
+                response = requests.put(url, json=json_data, headers=headers, timeout=30, verify=False)
             else:
                 raise ValueError(f"Неподдерживаемый метод: {method}")
 
@@ -97,7 +99,8 @@ def prepare_data():
     # Сохраняем полные данные (для информации)
     for work in works:
         work_id = work.get("Id") or work.get("id")
-        if work_id:
+        # Пропускаем теневые задачи (без названия)
+        if work_id and work.get("Name"):
             save_task_data(work_id, work)
 
     return links, works, token
@@ -170,7 +173,6 @@ def run_pass2_update(links, works):
         if bitrix_id:
             try:
                 if update_bitrix_task(bitrix_id, work, links):
-                    log_info(f"ОБНОВЛЕНА: {task_name[:40]}")
                     updated += 1
             except Exception as e:
                 log_error(f"Ошибка обновления: {task_name[:30]} - {e}")
@@ -263,11 +265,11 @@ def sync_participants(links, token):
                     ISUR_WORK_PARTICIPANTS_URL,
                     method="post",
                     json_data=[new_participant],
+                    headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"},
                     retries=2
                 )
                 if part_post_resp.status_code in [200, 201]:
                     log_info(f"Добавлен участник {user_email} для задачи {isur_id[:8]}...")
-                    # Обновляем локальный индекс
                     existing_participants.add((isur_id, isur_emp_id))
             except Exception as e:
                 log_error(f"Ошибка добавления участника: {e}")
@@ -313,7 +315,7 @@ def run_pass3_parents(links, works):
                 resp = bitrix_request_with_limiter(
                     "POST",
                     f"{BITRIX_WEBHOOK}task.update",
-                    json_data={
+                    json={
                         "id": child_bitrix_id,
                         "data": {"PARENT_ID": parent_bitrix_id}
                     },
@@ -338,11 +340,50 @@ def run_pass3_parents(links, works):
 # ОСНОВНАЯ ФУНКЦИЯ СИНХРОНИЗАЦИИ
 # ============================================================
 
+def sync_projects():
+    """Проверяет проекты в ИСУР и создает для них группы в Битриксе, если их нет."""
+    log_info("📁 Проверка проектов ИСУР...")
+    
+    try:
+        token = get_isur_token()
+        projects_url = ISUR_API_URL.replace('/Works', '/Projects')
+        headers = {"Authorization": f"Bearer {token}", "Accept": "application/json"}
+        
+        resp = isur_request_with_limiter("GET", projects_url, headers=headers, verify=False)
+        if resp.status_code != 200:
+            log_error("Не удалось получить список проектов ИСУР")
+            return
+            
+        projects = resp.json().get("Items", [])
+        project_links = load_project_links()
+        
+        for p in projects:
+            p_id = p.get("Id")
+            p_name = p.get("Name")
+            
+            if not p_id or not p_name:
+                continue
+                
+            # Если для этого проекта еще нет группы в Битриксе
+            if p_id not in project_links:
+                log_info(f"Новый проект ИСУР: '{p_name}'. Создаем группу...")
+                group_id = create_bitrix_group(p_name)
+                if group_id:
+                    save_project_link(p_id, group_id)
+            else:
+                log_info(f"Проект '{p_name}' уже привязан к группе {project_links[p_id]}")
+                
+    except Exception as e:
+        log_error(f"Ошибка синхронизации проектов: {e}")
+
 def sync_bidirectional():
     """Запускает все проходы синхронизации в правильном порядке."""
     print(f"\n{'='*70}")
     log_info(f"🔄 СИНХРОНИЗАЦИЯ (ИСУР → Битрикс): {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
     print(f"{'='*70}")
+
+    # 0. Проверяем и создаем проекты
+    sync_projects()
 
     # 1. Подготовка данных
     result = prepare_data()

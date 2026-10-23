@@ -12,6 +12,7 @@ LOG_FILE = os.path.join(LOG_DIR, "sync.log")
 # Основной логгер
 logger = logging.getLogger("ISUR-Bitrix")
 logger.setLevel(logging.DEBUG)
+logger.propagate = False
 
 # Формат сообщений
 formatter = logging.Formatter("%(asctime)s - %(levelname)s - %(message)s")

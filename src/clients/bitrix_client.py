@@ -105,7 +105,12 @@ def create_bitrix_task(work, links):
     if response.status_code == 200:
         result = response.json()
         if "result" in result:
-            task_id = result["result"]
+            result_data = result["result"]
+            # Битрикс возвращает {"task": {"id": "3075", ...}}
+            if isinstance(result_data, dict) and "task" in result_data:
+                task_id = result_data["task"].get("id")
+            else:
+                task_id = result_data
             log_info(f"Задача создана, ID: {task_id}")
             return task_id
     
@@ -154,6 +159,11 @@ def update_bitrix_task(bitrix_id, work, links):
     
     if response.status_code == 200:
         log_info(f"Обновлено: {task_name[:40]}")
+        
+        # ДОБАВЛЕНО: Запоминаем, что мы только что отправили (защита от эха)
+        from src.state import ignore_webhook
+        ignore_webhook(bitrix_id, {"title": task_name, "start_date_plan": start, "end_date_plan": finish}, 10)
+        
         return True
     else:
         log_error(f"Ошибка обновления задачи: {response.status_code} - {response.text[:100]}")
@@ -175,6 +185,8 @@ def get_task_info(bitrix_id):
                 "title": task.get("TITLE"),
                 "status": task.get("REAL_STATUS"),
                 "closed_date": task.get("CLOSED_DATE"),
+                "start_date_plan": task.get("START_DATE_PLAN"), 
+                "end_date_plan": task.get("DEADLINE"),          
                 "bitrix_id": bitrix_id
             }
     except Exception as e:
@@ -219,3 +231,25 @@ def get_bitrix_tasks():
 
     log_info(f"Получено задач из Битрикс24: {len(all_tasks)}")
     return all_tasks
+
+def create_bitrix_group(group_name):
+    """Создает рабочую группу (проект) в Битриксе и возвращает её ID."""
+    url = f"{BITRIX_WEBHOOK}sonet_group.create"
+    payload = {
+        "NAME": group_name[:100], # Ограничение длины названия
+        "DESCRIPTION": f"Проект ИСУР: {group_name}",
+        "VISIBLE": "Y",
+        "OPENED": "N"
+    }
+    
+    response = bitrix_request_with_limiter("POST", url, json=payload, timeout=30)
+    
+    if response.status_code == 200:
+        result = response.json()
+        if "result" in result:
+            group_id = result["result"]
+            log_info(f"Создана группа Битрикс '{group_name}' с ID: {group_id}")
+            return str(group_id)
+            
+    log_error(f"Ошибка создания группы '{group_name}': {response.text[:200]}")
+    return None

@@ -2,6 +2,7 @@ from src.clients.isur_client import close_isur_task, update_isur_task
 from src.clients.bitrix_client import get_task_info
 from src.utils.db_utils import load_links
 from src.logger import log_info, log_error
+from src.state import is_webhook_ignored
 
 def handle_event(event, bitrix_task_id):
     """Обрабатывает события от Битрикс24."""
@@ -19,10 +20,15 @@ def handle_event(event, bitrix_task_id):
         log_info(f"Задача {bitrix_task_id} не найдена в связках, пропускаем")
         return
     
-    # Получаем данные задачи из Битрикс24
+    # Получаем данные задачи из Битрикса
     task_info = get_task_info(bitrix_task_id)
     if not task_info:
         log_error(f"Не удалось получить данные задачи {bitrix_task_id}")
+        return
+
+    # ЗАЩИТА ОТ ЭХА: Проверяем, не наши ли это данные
+    if is_webhook_ignored(bitrix_task_id, task_info):
+        log_info(f"Игнорируем эхо-вебхук для {bitrix_task_id} (наше же изменение)")
         return
     
     if event == "ONTASKCOMPLETE":
@@ -34,10 +40,20 @@ def handle_event(event, bitrix_task_id):
     
     elif event == "ONTASKUPDATE":
         log_info(f"🔄 Задача {bitrix_task_id} обновлена в Битрикс")
-        if update_isur_task(isur_id, task_info):
-            log_info(f"   ✅ Задача {isur_id} обновлена в ИСУР")
+        
+        # Проверяем, закрыта ли задача (статус 5)
+        if task_info and str(task_info.get("status")) == "5":
+            log_info(f"   Задача {bitrix_task_id} завершена, закрываем в ИСУР...")
+            if close_isur_task(isur_id):
+                log_info(f"   ✅ Задача {isur_id} закрыта в ИСУР")
+            else:
+                log_error(f"   ❌ Ошибка закрытия задачи {isur_id} в ИСУР")
         else:
-            log_error(f"   ❌ Ошибка обновления задачи {isur_id} в ИСУР")
+            # Обновляем данные, если задача не закрыта
+            if update_isur_task(isur_id, task_info):
+                log_info(f"   ✅ Задача {isur_id} обновлена в ИСУР")
+            else:
+                log_error(f"   ❌ Ошибка обновления задачи {isur_id} в ИСУР")
     
     else:
         log_info(f"⚠️ Неизвестное событие: {event}")
