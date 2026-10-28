@@ -106,25 +106,39 @@ def get_isur_employees(token):
 # ============================================================
 
 def close_isur_task(isur_id):
-    """Закрывает задачу в ИСУР."""
+    """Закрывает задачу в ИСУР (полным объектом, чтобы не затереть поля)."""
     try:
         token = get_isur_token()
         headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
 
-        payload = [{
-            "Id": isur_id,
-            "Status": "Completed",
-            "FactualFinish": datetime.now().isoformat(),
-            "AmountMeasurementUnit": "ManHour",
-            "FactualAmountMeasurementUnit": "ManHour"
-        }]
+        # Читаем задачу целиком
+        resp_list = isur_request_with_limiter("GET", ISUR_API_URL, headers=headers, verify=False)
+        if resp_list.status_code != 200:
+            log_error(f"Не удалось прочитать задачу {isur_id} для закрытия")
+            return False
+        items = resp_list.json().get("Items", [])
+        task = next((w for w in items if str(w.get("Id","")).lower() == str(isur_id).lower()), None)
+        if not task:
+            log_error(f"Задача {isur_id} не найдена для закрытия")
+            return False
 
-        response = isur_request_with_limiter("PUT", ISUR_API_URL, json=payload, headers=headers, verify=False)
-        return response.status_code == 200
+        payload = dict(task)
+        payload.pop("Product_Id", None)
+        payload["Status"] = "Completed"
+        payload["FactualFinish"] = datetime.now().isoformat()
+        payload["AmountMeasurementUnit"] = payload.get("AmountMeasurementUnit") or "ManHour"
+        payload["FactualAmountMeasurementUnit"] = payload.get("FactualAmountMeasurementUnit") or "ManHour"
+
+        resp = isur_request_with_limiter("PUT", ISUR_API_URL, json=[payload], headers=headers, verify=False)
+        if resp.status_code == 200:
+            log_info(f"Задача {isur_id[:8]}... закрыта в ИСУР")
+            return True
+        log_error(f"Ошибка закрытия {isur_id}: {resp.status_code} - {resp.text[:200]}")
+        return False
     except Exception as e:
         log_error(f"Ошибка закрытия в ИСУР: {e}")
         return False
-
+    
 # ============================================================
 # ЯДРО: ОБНОВЛЕНИЕ ДАТ (НЕ ТРОГАТЬ БЕЗ НЕОБХОДИМОСТИ)
 # ============================================================
@@ -390,4 +404,83 @@ def sync_task_participants(isur_id, bitrix_id):
             return True
     except Exception as e:
         log_error(f"Ошибка sync_task_participants: {e}")
+        return False
+def get_isur_task(isur_id):
+    """Возвращает задачу ИСУР по ID (или None)."""
+    try:
+        token = get_isur_token()
+        headers = {"Authorization": f"Bearer {token}", "Accept": "application/json"}
+        resp = isur_request_with_limiter("GET", ISUR_API_URL, headers=headers, verify=False)
+        if resp.status_code != 200:
+            return None
+        items = resp.json().get("Items", [])
+        return next((w for w in items if str(w.get("Id","")).lower() == str(isur_id).lower()), None)
+    except Exception as e:
+        log_error(f"Ошибка get_isur_task: {e}")
+        return None
+    
+def reopen_isur_task(isur_id):
+    """Возвращает задачу в работу в ИСУР (сбрасывает FactualFinish)."""
+    try:
+        token = get_isur_token()
+        headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
+
+        resp_list = isur_request_with_limiter("GET", ISUR_API_URL, headers=headers, verify=False)
+        if resp_list.status_code != 200:
+            return False
+
+        items = resp_list.json().get("Items", [])
+        task = next((w for w in items if str(w.get("Id","")).lower() == str(isur_id).lower()), None)
+        if not task:
+            return False
+
+        payload = dict(task)
+        payload.pop("Product_Id", None)
+        payload["FactualStart"] = None
+        payload["FactualFinish"] = None
+        payload["AmountMeasurementUnit"] = payload.get("AmountMeasurementUnit") or "ManHour"
+        payload["FactualAmountMeasurementUnit"] = payload.get("FactualAmountMeasurementUnit") or "ManHour"
+
+        resp = isur_request_with_limiter("PUT", ISUR_API_URL, json=[payload], headers=headers, verify=False)
+        if resp.status_code == 200:
+            log_info(f"Задача {isur_id[:8]}... возвращена в работу (FactualFinish = null)")
+            return True
+        log_error(f"Ошибка возврата в работу {isur_id}: {resp.status_code} - {resp.text[:200]}")
+        return False
+    except Exception as e:
+        log_error(f"Ошибка reopen_isur_task: {e}")
+        return False
+
+def set_isur_factual_start(isur_id):
+    """Ставит FactualStart и FactualAmount, если задача ещё не начата."""
+    try:
+        token = get_isur_token()
+        headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
+
+        resp_list = isur_request_with_limiter("GET", ISUR_API_URL, headers=headers, verify=False)
+        if resp_list.status_code != 200:
+            return False
+        items = resp_list.json().get("Items", [])
+        task = next((w for w in items if str(w.get("Id","")).lower() == str(isur_id).lower()), None)
+        if not task:
+            return False
+
+        if task.get("FactualStart"):
+            return True
+
+        payload = dict(task)
+        payload.pop("Product_Id", None)
+        payload["FactualStart"] = datetime.now().isoformat()
+        payload["FactualAmount"] = 1.0
+        payload["AmountMeasurementUnit"] = payload.get("AmountMeasurementUnit") or "ManHour"
+        payload["FactualAmountMeasurementUnit"] = payload.get("FactualAmountMeasurementUnit") or "ManHour"
+
+        resp = isur_request_with_limiter("PUT", ISUR_API_URL, json=[payload], headers=headers, verify=False)
+        if resp.status_code == 200:
+            log_info(f"Задача {isur_id[:8]}... взята в работу (FactualStart)")
+            return True
+        log_error(f"Ошибка FactualStart {isur_id}: {resp.status_code} - {resp.text[:200]}")
+        return False
+    except Exception as e:
+        log_error(f"Ошибка set_isur_factual_start: {e}")
         return False

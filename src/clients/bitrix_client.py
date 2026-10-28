@@ -170,7 +170,7 @@ def update_bitrix_task(bitrix_id, work, links):
         return False
 
 def get_task_info(bitrix_id):
-    """Получает информацию о задаче из Битрикс24 (для поиска завершённых)"""
+    """Получает информацию о задаче из Битрикс24."""
     try:
         response = bitrix_request_with_limiter(
             "GET",
@@ -180,13 +180,19 @@ def get_task_info(bitrix_id):
         )
         if response.status_code == 200:
             result = response.json()
-            task = result.get("result", {}).get("DATA", {})
+            data = result.get("result", {}).get("DATA", {})
+            task = result.get("result", {}).get("task", {})
+
+            # status: сначала из task (где он есть), потом из DATA
+            status = task.get("status") or data.get("status") or data.get("REAL_STATUS")
+
             return {
-                "title": task.get("TITLE"),
-                "status": task.get("REAL_STATUS"),
-                "closed_date": task.get("CLOSED_DATE"),
-                "start_date_plan": task.get("START_DATE_PLAN"), 
-                "end_date_plan": task.get("DEADLINE"),          
+                "title": data.get("TITLE") or task.get("title"),
+                "status": status,
+                "real_status": data.get("REAL_STATUS"),
+                "closed_date": data.get("CLOSED_DATE"),
+                "start_date_plan": data.get("START_DATE_PLAN"),
+                "end_date_plan": data.get("DEADLINE"),
                 "bitrix_id": bitrix_id
             }
     except Exception as e:
