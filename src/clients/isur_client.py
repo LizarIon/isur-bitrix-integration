@@ -330,3 +330,64 @@ def trigger_isur_recalculation(project_id, changed_task_id, new_start, new_finis
                         tasks_to_process.append(to_id)
 
     return True
+
+def sync_task_participants(isur_id, bitrix_id):
+    """Синхронизирует участников задачи ИСУР с ответственным из Битрикса.
+    Удаляет всех лишних, добавляет нужного (по email).
+    """
+    from src.config import BITRIX_WEBHOOK
+    from src.clients.bitrix_client import bitrix_request_with_limiter
+
+    try:
+        token = get_isur_token()
+        headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json", "Accept": "application/json"}
+
+        # 1. Ответственный из Битрикса
+        b_resp = bitrix_request_with_limiter("GET", f"{BITRIX_WEBHOOK}task.get", params={"id": bitrix_id}, timeout=10)
+        b_task = b_resp.json().get("result", {}).get("DATA", {})
+        resp_id = b_task.get("RESPONSIBLE_ID")
+        if not resp_id:
+            return False
+
+        u_resp = bitrix_request_with_limiter("GET", f"{BITRIX_WEBHOOK}user.get", params={"id": resp_id}, timeout=10)
+        user_data = u_resp.json().get("result", [])
+        if isinstance(user_data, list) and user_data:
+            user_data = user_data[0]
+        email = user_data.get("EMAIL")
+        if not email:
+            return False
+
+        # 2. Email -> Employee_Id в ИСУР
+        emp_resp = isur_request_with_limiter("GET", ISUR_EMPLOYEES_URL, headers=headers, verify=False)
+        employees = emp_resp.json().get("Items", [])
+        isur_emp_id = next((e["Id"] for e in employees if e.get("Email") == email), None)
+        if not isur_emp_id:
+            log_warning(f"Сотрудник {email} не найден в ИСУР, участников не трогаем")
+            return False
+
+        # 3. Текущие участники задачи
+        part_resp = isur_request_with_limiter("GET", ISUR_WORK_PARTICIPANTS_URL, headers=headers, verify=False)
+        parts = part_resp.json().get("Items", [])
+        task_parts = [p for p in parts if p.get("Work_Id") == isur_id]
+
+        # 4. Удаляем всех, кроме нужного
+        for p in task_parts:
+            if p.get("Employee_Id") != isur_emp_id:
+                isur_request_with_limiter("DELETE", f"{ISUR_WORK_PARTICIPANTS_URL}/{p['Id']}", headers=headers, verify=False)
+                log_info(f"Удалён участник {p['Employee_Id']} из задачи {isur_id[:8]}...")
+
+        # 5. Добавляем нужного, если его нет
+        if not any(p.get("Employee_Id") == isur_emp_id for p in task_parts):
+            payload = [{"ParticipationPercent": 100, "Employee_Id": isur_emp_id, "Work_Id": isur_id}]
+            resp = isur_request_with_limiter("POST", ISUR_WORK_PARTICIPANTS_URL, json=payload, headers=headers, verify=False)
+            if resp.status_code in (200, 201):
+                log_info(f"Добавлен участник {email} в задачу {isur_id[:8]}...")
+                return True
+            log_error(f"Ошибка добавления участника: {resp.status_code} - {resp.text[:200]}")
+            return False
+        else:
+            log_info(f"Участник {email} уже есть в задаче {isur_id[:8]}...")
+            return True
+    except Exception as e:
+        log_error(f"Ошибка sync_task_participants: {e}")
+        return False

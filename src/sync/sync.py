@@ -192,99 +192,17 @@ def run_pass2_update(links, works):
 # ============================================================
 
 def sync_participants(links, token):
-    """Добавляет исполнителей (участников) в задачи ИСУР."""
+    """Синхронизирует участников (исполнителей) для всех связок."""
     log_info("👥 Синхронизация участников (исполнителей)")
     print("-" * 50)
 
-    try:
-        employees = get_isur_employees(token)
-        email_to_isur_id = {emp.get("Email"): emp.get("Id") for emp in employees if emp.get("Email")}
-    except ISURAPIError as e:
-        log_error(f"Ошибка получения сотрудников ИСУР: {e}")
-        return
-    except Exception as e:
-        log_error(f"Неожиданная ошибка при получении сотрудников ИСУР: {e}")
-        return
-
-    # Получаем ВСЕХ участников ОДИН РАЗ до цикла
-    try:
-        part_resp = request_with_retry(
-            ISUR_WORK_PARTICIPANTS_URL,
-            method="get",
-            retries=2
-        )
-        all_participants = part_resp.json().get("Items", [])
-    except Exception as e:
-        log_error(f"Ошибка получения участников ИСУР: {e}")
-        all_participants = []
-
-    # Индекс: (work_id, employee_id) → exists
-    existing_participants = {
-        (p.get("Work_Id"), p.get("Employee_Id"))
-        for p in all_participants
-    }
-
+    from src.clients.isur_client import sync_task_participants
+    count = 0
     for isur_id, bitrix_id in links.items():
-        try:
-            b_resp = bitrix_request_with_limiter(
-                "GET",
-                f"{BITRIX_WEBHOOK}task.get",
-                params={"id": bitrix_id},
-                timeout=10
-            )
-            b_task = b_resp.json().get("result", {}).get("DATA", {})
-            responsible_bitrix_id = b_task.get("RESPONSIBLE_ID")
-            if not responsible_bitrix_id:
-                continue
-
-            u_resp = bitrix_request_with_limiter(
-                "GET",
-                f"{BITRIX_WEBHOOK}user.get",
-                params={"id": responsible_bitrix_id},
-                timeout=10
-            )
-            user_data = u_resp.json().get("result", [])
-            if isinstance(user_data, list) and user_data:
-                user_data = user_data[0]
-            user_email = user_data.get("EMAIL")
-            if not user_email:
-                continue
-
-            isur_emp_id = email_to_isur_id.get(user_email)
-            if not isur_emp_id:
-                log_warning(f"Сотрудник с email {user_email} не найден в ИСУР")
-                continue
-
-            # Проверяем по локальному индексу — БЕЗ запроса к API
-            if (isur_id, isur_emp_id) in existing_participants:
-                log_info(f"Участник уже добавлен для задачи {isur_id[:8]}...")
-                continue
-
-            new_participant = {
-                "ParticipationPercent": 100,
-                "Employee_Id": isur_emp_id,
-                "Work_Id": isur_id
-            }
-            try:
-                part_post_resp = request_with_retry(
-                    ISUR_WORK_PARTICIPANTS_URL,
-                    method="post",
-                    json_data=[new_participant],
-                    headers={"Authorization": f"Bearer {token}", "Content-Type": "application/json"},
-                    retries=2
-                )
-                if part_post_resp.status_code in [200, 201]:
-                    log_info(f"Добавлен участник {user_email} для задачи {isur_id[:8]}...")
-                    existing_participants.add((isur_id, isur_emp_id))
-            except Exception as e:
-                log_error(f"Ошибка добавления участника: {e}")
-                continue
-
-        except Exception as e:
-            log_error(f"Ошибка синхронизации участников для задачи {isur_id[:8]}...: {e}")
-            continue
-
+        if sync_task_participants(isur_id, bitrix_id):
+            count += 1
         time.sleep(0.2)
+    log_info(f"Участники синхронизированы: {count}")
 
 # ============================================================
 # ПРОХОД 3: УСТАНОВКА РОДИТЕЛЕЙ

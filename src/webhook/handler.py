@@ -46,8 +46,7 @@ def handle_event(event, bitrix_task_id):
         else:
             if update_isur_task(isur_id, task_info):
                 log_info(f"   ✅ Задача {isur_id} обновлена в ИСУР")
+                from src.clients.isur_client import sync_task_participants
+                sync_task_participants(isur_id, bitrix_task_id)
             else:
                 log_error(f"   ❌ Ошибка обновления задачи {isur_id} в ИСУР")
-    
-    else:
-        log_info(f"⚠️ Неизвестное событие: {event}")
