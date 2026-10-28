@@ -1,8 +1,9 @@
 import requests
 import time
-from collections import deque
-from datetime import datetime
 import urllib3
+from collections import deque
+from datetime import datetime, timedelta
+
 from src.config import (
     ISUR_LOGIN, ISUR_PASSWORD, ISUR_AUTH_URL,
     ISUR_API_URL, ISUR_WORK_PARTICIPANTS_URL, ISUR_EMPLOYEES_URL
@@ -10,7 +11,6 @@ from src.config import (
 from src.logger import log_info, log_error, log_debug, log_warning
 from src.exceptions import ISURAuthError, ISURAPIError
 
-# Отключаем предупреждения об непроверенных HTTPS-запросах (verify=False)
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 # ============================================================
@@ -44,7 +44,7 @@ def isur_request_with_limiter(method, url, **kwargs):
     return requests.request(method, url, **kwargs)
 
 # ============================================================
-# РАБОТА С API ИСУР
+# АВТОРИЗАЦИЯ
 # ============================================================
 
 def get_isur_token():
@@ -55,28 +55,62 @@ def get_isur_token():
     else:
         raise ISURAuthError(f"Ошибка авторизации: {response.status_code} - {response.text}")
 
+# ============================================================
+# ЧТЕНИЕ ДАННЫХ
+# ============================================================
+
 def get_isur_works(token):
     headers = {"Authorization": f"Bearer {token}", "Accept": "application/json"}
     response = isur_request_with_limiter("GET", ISUR_API_URL, headers=headers, verify=False)
-    
+
     if response.status_code != 200:
         raise ISURAPIError(f"Ошибка получения работ: {response.status_code} - {response.text}")
-    
+
     data = response.json()
-    
+
+    if isinstance(data, dict) and "Items" in data:
+        works = data["Items"]
+    elif isinstance(data, list):
+        works = data
+    else:
+        raise ISURAPIError(f"Неожиданный формат ответа: {data}")
+
+    # ФИЛЬТР: оставляем только нормальные задачи, привязанные к проекту
+    clean_works = []
+    for w in works:
+        if not w.get("Name") or not w.get("Project_Id"):
+            continue
+        clean_works.append(w)
+
+    return clean_works
+
+def get_isur_employees(token):
+    """Получает список сотрудников из ИСУР."""
+    headers = {"Authorization": f"Bearer {token}", "Accept": "application/json"}
+    response = isur_request_with_limiter("GET", ISUR_EMPLOYEES_URL, headers=headers, verify=False)
+
+    if response.status_code != 200:
+        raise ISURAPIError(f"Ошибка получения сотрудников: {response.status_code} - {response.text[:200]}")
+
+    data = response.json()
+
     if isinstance(data, dict) and "Items" in data:
         return data["Items"]
     elif isinstance(data, list):
         return data
     else:
-        raise ISURAPIError(f"Неожиданный формат ответа: {data}")
+        raise ISURAPIError(f"Неожиданный формат ответа сотрудников: {data}")
+
+# ============================================================
+# ЗАКРЫТИЕ ЗАДАЧИ
+# ============================================================
 
 def close_isur_task(isur_id):
-    """Закрывает задачу в ИСУР"""
+    """Закрывает задачу в ИСУР."""
     try:
         token = get_isur_token()
         headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
-        
+
         payload = [{
             "Id": isur_id,
             "Status": "Completed",
@@ -84,55 +118,71 @@ def close_isur_task(isur_id):
             "AmountMeasurementUnit": "ManHour",
             "FactualAmountMeasurementUnit": "ManHour"
         }]
-        
+
         response = isur_request_with_limiter("PUT", ISUR_API_URL, json=payload, headers=headers, verify=False)
         return response.status_code == 200
     except Exception as e:
         log_error(f"Ошибка закрытия в ИСУР: {e}")
         return False
 
+# ============================================================
+# ЯДРО: ОБНОВЛЕНИЕ ДАТ (НЕ ТРОГАТЬ БЕЗ НЕОБХОДИМОСТИ)
+# ============================================================
+
 def update_isur_task(isur_id, task_info):
     """Обновляет задачу в ИСУР, сохраняя её связи (проект, родителя)."""
     try:
         token = get_isur_token()
         headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
-        
+
         # 1. Получаем текущую задачу из ИСУР (чтобы взять Project_Id и Parent_Id)
         response_list = isur_request_with_limiter("GET", ISUR_API_URL, headers=headers, verify=False)
         target_task_old = None
         if response_list.status_code == 200:
             works = response_list.json().get("Items", [])
             target_task_old = next((w for w in works if w.get("Id") == isur_id), None)
-        
+
         if not target_task_old:
             log_error(f"Задача {isur_id} не найдена в ИСУР для обновления")
             return False
 
         # 2. Собираем новый объект (как в Swagger)
-        # Берем значения из ИСУР, если они там есть. Иначе ставим 1.0 и 0.0 для защиты от 409
         old_plan = target_task_old.get("PlanAmount")
         old_factual = target_task_old.get("FactualAmount")
         old_unit = target_task_old.get("AmountMeasurementUnit")
-        
-        # Если единицы нет, ставим дефолт, чтобы не было 409
+
         unit = old_unit if old_unit else "ManHour"
+
+        # Расчёт трудоёмкости по новым датам (дни × 8)
+        plan_amount = old_plan if old_plan is not None else 1.0
+        start_s = task_info.get("start_date_plan")
+        end_s = task_info.get("end_date_plan")
+        if start_s and end_s:
+            try:
+                d1 = datetime.strptime(start_s[:10], "%d.%m.%Y")
+                d2 = datetime.strptime(end_s[:10], "%d.%m.%Y")
+                duration_days = (d2 - d1).days
+                if duration_days > 0:
+                    plan_amount = duration_days * 8
+            except Exception as e:
+                log_error(f"Не удалось пересчитать трудоемкость: {e}")
 
         new_task = {
             "Id": isur_id,
             "Name": task_info.get("title", target_task_old.get("Name")),
             "AmountMeasurementUnit": unit,
             "FactualAmountMeasurementUnit": unit,
-            "PlanAmount": old_plan if old_plan is not None else 1.0,
+            "PlanAmount": plan_amount,
             "FactualAmount": old_factual if old_factual is not None else 0.0,
             "Status": target_task_old.get("Status") or "InProgress",
             "Project_Id": target_task_old.get("Project_Id"),
             "Parent_Id": target_task_old.get("Parent_Id"),
         }
-        
+
         # Если родителя нет, удаляем ключ, чтобы не отправлять null
         if new_task["Parent_Id"] is None:
             del new_task["Parent_Id"]
-            
+
         # НЕ передаем Product_Id (он ломает PUT)
 
         # 3. Формируем даты (ДД.ММ.ГГГГ -> ГГГГ-ММ-ДДT00:00:00.000Z)
@@ -151,14 +201,13 @@ def update_isur_task(isur_id, task_info):
                 new_task["Finish"] = f"{parts[2]}-{parts[1]}-{parts[0]}T00:00:00.000Z"
         elif target_task_old.get("Finish"):
             new_task["Finish"] = target_task_old.get("Finish")
-            
+
         # 4. Отправляем
         response = isur_request_with_limiter("PUT", ISUR_API_URL, json=[new_task], headers=headers, verify=False)
-        
+
         if response.status_code == 200:
             # Если изменились даты (start или finish), запускаем пересчет графика
             if task_info.get("start_date_plan") or task_info.get("end_date_plan"):
-                # Берем Project_Id из задачи, чтобы знать, какой проект пересчитывать
                 project_id = target_task_old.get("Project_Id")
                 if project_id:
                     trigger_isur_recalculation(project_id, isur_id, new_task.get("Start"), new_task.get("Finish"))
@@ -170,140 +219,97 @@ def update_isur_task(isur_id, task_info):
         log_error(f"Ошибка обновления задачи в ИСУР: {e}")
         return False
 
-        # Берем значения из ИСУР
-        old_plan = target_task_old.get("PlanAmount")
-        old_factual = target_task_old.get("FactualAmount")
-        old_unit = target_task_old.get("AmountMeasurementUnit")
-        
-        unit = old_unit if old_unit else "ManHour"
+def set_isur_plan_amount_by_dates(isur_id, start_iso, finish_iso):
+    """Считает трудоемкость по датам ИСУР (дни × 8) и пишет полным объектом."""
+    try:
+        from datetime import datetime
+        if not start_iso or not finish_iso:
+            return False
+        d1 = datetime.strptime(start_iso.split("T")[0], "%Y-%m-%d")
+        d2 = datetime.strptime(finish_iso.split("T")[0], "%Y-%m-%d")
+        days = (d2 - d1).days
+        if days <= 0:
+            return False
 
-        new_task = {
-            "Id": isur_id,
-            "Name": task_info.get("title", target_task_old.get("Name")),
-            "AmountMeasurementUnit": unit,
-            "FactualAmountMeasurementUnit": unit,
-            "PlanAmount": old_plan if old_plan is not None else 1.0,
-            "FactualAmount": old_factual if old_factual is not None else 0.0,
-            "Status": target_task_old.get("Status") or "InProgress",
-            "Project_Id": target_task_old.get("Project_Id"),
-            "Parent_Id": target_task_old.get("Parent_Id"),
-            # ДОБАВИТЬ ВОТ ЭТИ ДВЕ СТРОКИ:
-            "IncomingLinks_Id": target_task_old.get("IncomingLinks_Id") or [],
-            "OutgoingLinks_Id": target_task_old.get("OutgoingLinks_Id") or [],
-        }
-    
-def get_isur_employees(token):
-    """Получает список сотрудников из ИСУР."""
-    headers = {"Authorization": f"Bearer {token}", "Accept": "application/json"}
-    response = isur_request_with_limiter("GET", ISUR_EMPLOYEES_URL, headers=headers, verify=False)
-    
-    if response.status_code != 200:
-        raise ISURAPIError(f"Ошибка получения сотрудников: {response.status_code} - {response.text[:200]}")
-    
-    data = response.json()
-    
-    if isinstance(data, dict) and "Items" in data:
-        return data["Items"]
-    elif isinstance(data, list):
-        return data
-    else:
-        raise ISURAPIError(f"Неожиданный формат ответа сотрудников: {data}")
+        token = get_isur_token()
+        headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
+        resp_list = isur_request_with_limiter("GET", ISUR_API_URL, headers=headers, verify=False)
+        if resp_list.status_code != 200:
+            return False
+        items = resp_list.json().get("Items", [])
+        task = next((w for w in items if str(w.get("Id","")).lower() == str(isur_id).lower()), None)
+        if not task:
+            return False
 
-def get_isur_works(token):
-    headers = {"Authorization": f"Bearer {token}", "Accept": "application/json"}
-    response = isur_request_with_limiter("GET", ISUR_API_URL, headers=headers, verify=False)
-    
-    if response.status_code != 200:
-        raise ISURAPIError(f"Ошибка получения работ: {response.status_code} - {response.text}")
-    
-    data = response.json()
-    
-    if isinstance(data, dict) and "Items" in data:
-        works = data["Items"]
-    elif isinstance(data, list):
-        works = data
-    else:
-        raise ISURAPIError(f"Неожиданный формат ответа: {data}")
-    
-    # ФИЛЬТР: Оставляем только нормальные задачи, привязанные к проекту
-    clean_works = []
-    for w in works:
-        # Пропускаем, если нет названия или нет привязки к проекту
-        if not w.get("Name") or not w.get("Project_Id"):
-            continue
-        clean_works.append(w)
-    
-    return clean_works
+        payload = dict(task)
+        payload.pop("Product_Id", None)
+        payload["PlanAmount"] = days * 8
+        payload["AmountMeasurementUnit"] = "ManHour"
+        payload["FactualAmountMeasurementUnit"] = "ManHour"
+
+        resp = isur_request_with_limiter("PUT", ISUR_API_URL, json=[payload], headers=headers, verify=False)
+        if resp.status_code == 200:
+            log_info(f"Трудоемкость ИСУР {isur_id} по датам: {days} дн. * 8 = {days*8}")
+            return True
+        log_error(f"Ошибка трудоемкости ИСУР {isur_id}: {resp.status_code} - {resp.text[:200]}")
+        return False
+    except Exception as e:
+        log_error(f"Ошибка set_isur_plan_amount_by_dates: {e}")
+        return False
+
+# ============================================================
+# КАСКАДНЫЙ ПЕРЕСЧЕТ ЗАВИСИМОСТЕЙ
+# ============================================================
 
 def trigger_isur_recalculation(project_id, changed_task_id, new_start, new_finish):
-    """Локально пересчитывает зависимости и обновляет их в ИСУР через GanttApi."""
-    import requests
-    import urllib3
-    import re
-    from datetime import datetime, timedelta
-    from src.config import ISUR_LOGIN, ISUR_PASSWORD, ISUR_API_URL, ISUR_WORK_PARTICIPANTS_URL
+    """Локально пересчитывает зависимости и обновляет их в ИСУР."""
     from src.sync.sync import request_with_retry
-    
-    # 1. Получаем связи из публичного API
+
     token = get_isur_token()
     headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
-    
-    # Получаем все задачи и связи
+
     resp_works = isur_request_with_limiter("GET", ISUR_API_URL, headers=headers, verify=False)
     works = resp_works.json().get("Items", [])
-    
+
     links_url = ISUR_API_URL.replace('/Works', '/Links')
     resp_links = isur_request_with_limiter("GET", links_url, headers=headers, verify=False)
     links = resp_links.json().get("Items", [])
-    
-    # Строим карту: ID задачи -> объект задачи
+
     tasks_map = {w["Id"]: w for w in works if w.get("Id")}
-    
-    # Обновляем дату измененной задачи
+
     tasks_map[changed_task_id]["Start"] = new_start
     tasks_map[changed_task_id]["Finish"] = new_finish
-    
-    # КАСКАДНЫЙ ПЕРЕСЧЕТ
-    # Обновляем дату измененной задачи
-    tasks_map[changed_task_id]["Start"] = new_start
-    tasks_map[changed_task_id]["Finish"] = new_finish
-    
-    # Список задач, которые мы уже обновили, чтобы не зациклиться
+
     updated_tasks = {changed_task_id}
     tasks_to_process = [changed_task_id]
 
     while tasks_to_process:
         current_id = tasks_to_process.pop(0)
         current_task = tasks_map[current_id]
-        
+
         for link in links:
             from_id = link.get("From_Id")
             to_id = link.get("To_Id")
-            
-            # Если текущая задача - предшественник для to_id
+
             if from_id == current_id and to_id in tasks_map:
-                # Если мы её еще не обновляли в этом цикле
                 if to_id not in updated_tasks:
+                    updated_tasks.add(to_id) 
                     pred_finish_str = current_task.get("Finish")
                     if not pred_finish_str:
                         continue
-                        
-                    # Парсим дату окончания предшественника
+
                     pred_finish = datetime.strptime(pred_finish_str.split("T")[0], "%Y-%m-%d")
-                    # Последователь начинается на следующий день
                     succ_start = pred_finish + timedelta(days=1)
-                    
+
                     succ_task = tasks_map[to_id]
                     if succ_task.get("Start") and succ_task.get("Finish"):
                         succ_start_old = datetime.strptime(succ_task["Start"].split("T")[0], "%Y-%m-%d")
                         succ_finish_old = datetime.strptime(succ_task["Finish"].split("T")[0], "%Y-%m-%d")
                         duration = (succ_finish_old - succ_start_old).days
-                        
-                        # Новые даты
+
                         succ_task["Start"] = succ_start.strftime("%Y-%m-%dT00:00:00")
                         succ_task["Finish"] = (succ_start + timedelta(days=duration)).strftime("%Y-%m-%dT00:00:00")
-                        
-                        # Обновляем через публичный API (PUT)
+
                         payload = [{
                             "Id": to_id,
                             "Name": succ_task["Name"],
@@ -319,8 +325,7 @@ def trigger_isur_recalculation(project_id, changed_task_id, new_start, new_finis
                         }]
                         isur_request_with_limiter("PUT", ISUR_API_URL, json=payload, headers=headers, verify=False)
                         log_info(f"   ✅ Сдвинута задача {succ_task['Name']} (из-за {current_task['Name']})")
-                        
-                        # Добавляем в обработанные и ставим в очередь на проверку её детей
+
                         updated_tasks.add(to_id)
                         tasks_to_process.append(to_id)
 

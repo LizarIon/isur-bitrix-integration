@@ -174,6 +174,11 @@ def run_pass2_update(links, works):
             try:
                 if update_bitrix_task(bitrix_id, work, links):
                     updated += 1
+                    try:
+                        from src.clients.isur_client import set_isur_plan_amount_by_dates
+                        set_isur_plan_amount_by_dates(work_id, work.get("Start"), work.get("Finish"))
+                    except Exception as e:
+                        log_error(f"Ошибка пересчета трудоемкости {work_id}: {e}")
             except Exception as e:
                 log_error(f"Ошибка обновления: {task_name[:30]} - {e}")
                 continue
