@@ -110,7 +110,7 @@ def prepare_data():
 # ============================================================
 
 def run_pass1_creation(links, works):
-    """Создаёт новые задачи в Битрикс24."""
+    """Создаёт новые задачи в Битрикс24 и возвращает обновленный словарь связей."""
     log_info("📤 ПРОХОД 1: Создание новых задач")
     print("-" * 50)
 
@@ -135,6 +135,7 @@ def run_pass1_creation(links, works):
             try:
                 new_id = create_bitrix_task(work, links)
                 save_link(work_id, new_id)
+                links[str(work_id)] = str(new_id)  # <-- ВАЖНО: обновляем словарь в памяти
                 log_info(f"СОЗДАНА: {task_name[:40]} (ID: {new_id})")
                 created += 1
             except Exception as e:
@@ -144,6 +145,7 @@ def run_pass1_creation(links, works):
         time.sleep(0.3)
 
     log_info(f"СОЗДАНО: {created}")
+    return links
 
 # ============================================================
 # ПРОХОД 2: ОБНОВЛЕНИЕ ДАННЫХ
@@ -316,16 +318,16 @@ def sync_bidirectional():
         return
     links, works, token = result
 
-    # 2. Проход 1: создание задач
-    run_pass1_creation(links, works)
+    # 2. Проход 1: создание задач (возвращает обновленные links)
+    links = run_pass1_creation(links, works)
 
-    # 3. Проход 2: обновление данных
+    # 3. Проход 2: обновление данных (уже с новыми links)
     run_pass2_update(links, works)
 
-    # 4. Синхронизация участников
+    # 4. Синхронизация участников (уже с новыми links)
     sync_participants(links, token)
 
-    # 5. Проход 3: родители
+    # 5. Проход 3: родители (уже с новыми links!)
     run_pass3_parents(links, works)
 
     print(f"\n{'='*70}")
