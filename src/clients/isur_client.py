@@ -1,6 +1,7 @@
 import requests
 import time
 import urllib3
+import holidays
 from collections import deque
 from datetime import datetime, timedelta
 
@@ -13,6 +14,30 @@ from src.exceptions import ISURAuthError, ISURAPIError
 
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
+def count_working_days(start_date, finish_date):
+    """Считает рабочие дни (пн-пт, без праздников РФ) между датами включительно."""
+    if not start_date or not finish_date:
+        return 0
+    try:
+        if isinstance(start_date, str):
+            start_date = datetime.strptime(start_date.split("T")[0], "%Y-%m-%d").date()
+        if isinstance(finish_date, str):
+            finish_date = datetime.strptime(finish_date.split("T")[0], "%Y-%m-%d").date()
+        
+        years = list(range(start_date.year, finish_date.year + 1))
+        ru_holidays = holidays.Russia(years=years)
+        
+        days = 0
+        d = start_date
+        while d <= finish_date:
+            if d.weekday() < 5 and d not in ru_holidays:
+                days += 1
+            d += timedelta(days=1)
+        return days
+    except Exception as e:
+        log_error(f"Ошибка count_working_days: {e}")
+        return 0
+    
 # ============================================================
 # КОНТРОЛЬ ЧАСТОТЫ ЗАПРОСОВ К ИСУР
 # ============================================================
@@ -175,9 +200,9 @@ def update_isur_task(isur_id, task_info):
             try:
                 d1 = datetime.strptime(start_s[:10], "%d.%m.%Y")
                 d2 = datetime.strptime(end_s[:10], "%d.%m.%Y")
-                duration_days = (d2 - d1).days
-                if duration_days > 0:
-                    plan_amount = duration_days * 8
+                working_days = count_working_days(d1.date(), d2.date())
+                if working_days > 0:
+                    plan_amount = working_days * 8
             except Exception as e:
                 log_error(f"Не удалось пересчитать трудоемкость: {e}")
 
@@ -234,15 +259,15 @@ def update_isur_task(isur_id, task_info):
         return False
 
 def set_isur_plan_amount_by_dates(isur_id, start_iso, finish_iso):
-    """Считает трудоемкость по датам ИСУР (дни × 8) и пишет полным объектом."""
+    """Считает трудоемкость по рабочим дням ИСУР (рабочие дни × 8) и пишет полным объектом."""
     try:
-        from datetime import datetime
         if not start_iso or not finish_iso:
             return False
         d1 = datetime.strptime(start_iso.split("T")[0], "%Y-%m-%d")
         d2 = datetime.strptime(finish_iso.split("T")[0], "%Y-%m-%d")
-        days = (d2 - d1).days
-        if days <= 0:
+        
+        working_days = count_working_days(d1.date(), d2.date())
+        if working_days <= 0:
             return False
 
         token = get_isur_token()
@@ -257,13 +282,13 @@ def set_isur_plan_amount_by_dates(isur_id, start_iso, finish_iso):
 
         payload = dict(task)
         payload.pop("Product_Id", None)
-        payload["PlanAmount"] = days * 8
+        payload["PlanAmount"] = working_days * 8
         payload["AmountMeasurementUnit"] = "ManHour"
         payload["FactualAmountMeasurementUnit"] = "ManHour"
 
         resp = isur_request_with_limiter("PUT", ISUR_API_URL, json=[payload], headers=headers, verify=False)
         if resp.status_code == 200:
-            log_info(f"Трудоемкость ИСУР {isur_id} по датам: {days} дн. * 8 = {days*8}")
+            log_info(f"Трудоемкость ИСУР {isur_id} по датам: {working_days} раб.дн. * 8 = {working_days*8}")
             return True
         log_error(f"Ошибка трудоемкости ИСУР {isur_id}: {resp.status_code} - {resp.text[:200]}")
         return False
@@ -343,7 +368,14 @@ def trigger_isur_recalculation(project_id, changed_task_id, new_start, new_finis
                         updated_tasks.add(to_id)
                         tasks_to_process.append(to_id)
 
+                        # Пересчитываем трудоемкость сдвинутой задачи
+                        try:
+                            set_isur_plan_amount_by_dates(to_id, succ_task["Start"], succ_task["Finish"])
+                        except Exception as e:
+                            log_error(f"Ошибка пересчета трудоемкости {to_id}: {e}")
+
     return True
+
 
 def sync_task_participants(isur_id, bitrix_id):
     """Синхронизирует участников задачи ИСУР с ответственным из Битрикса.
